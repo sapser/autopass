@@ -1,0 +1,172 @@
+#!/bin/sh
+#
+#ssh到远程主机执行命令，并自动填密码
+
+#远程主机
+HOST=""
+
+#ssh连接用户，这是ssh提供的系统变量
+USER=""
+
+#ssh连接端口
+PORT=22
+
+#密码文件，必须有可执行权限
+PASSWORD_FILE=""
+
+#执行远程主机执行命令的shell
+REMOTE_SHELL="/bin/sh"
+
+#ssh连接选项
+#StrictHostKeyChecking=no不会检查~/.ssh/known_hosts文件
+#UserKnownHostsFile=/dev/null不记录信息到~/.ssh/known_hosts文件
+#SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+SSH_ARGS="-o StrictHostKeyChecking=no"
+
+#ssh连接超时时间
+SSH_TIMEOUT=30
+
+#并发数量
+FORKS=5
+
+#要执行的命令
+CMD=""
+
+#引用未定义的变量时报错并退出脚本
+set -o nounset
+
+
+error() {
+    echo -e "\033[31m$@\033[0m" >&2
+    exit 1
+}
+
+
+#检查命令返回值，判断命令是否成功执行
+return_code_check() {
+    if [[ "$?" -eq 0 ]]; then
+        echo "$@ success!"
+    else
+        error "$@ failed!"
+    fi
+}
+
+
+usage() {
+    cat <<EOF
+Usage: $(basename $0) <-h host> <-k password | -K password_file> [option]... "cmd cmd_args"
+
+Options:
+  -h <host>               远程主机
+  -u <user>               ssh用户，默认为当前用户
+  -p <port>               ssh端口，默认22端口
+  -k <password>           ssh密码
+  -K <password_file>      ssh密码脚本，密码脚本必须有可执行权限
+  -s <shell>              远程主机shell，默认为/bin/sh
+  -f <forks>              并发数，默认为5
+  -o <ssh_args>           ssh连接选项
+  -t <ssh_timeout>        ssh连接超时时间，默认30s
+EOF
+    exit
+}
+
+
+#如果通过-k选项提供密码，则自动创建密码脚本
+create_password_file() {
+    local password="$1"
+    local pass_file="${HOME}/.autopass_file.sh"
+
+    cat <<EOF >"$pass_file"
+#!/bin/sh
+echo "$password"
+EOF
+
+    if [[ "$?" == 0 ]]; then
+        #密码文件必须有可执行权限
+        chmod +x "$pass_file"
+
+        PASSWORD_FILE="$pass_file"
+    else
+        error "Create password file $pass_file failed!"
+    fi
+}
+
+
+#ssh到远程主机并执行命令
+remote_cmd() {
+    local host="$1"
+
+    #setsid在新session中运行进程，让进程脱离终端
+    #env让ssh运行在设置好的环境中
+    #SSH_ASKPASS是由ssh提供的系统变量，值为保存ssh连接密码的可执行文件
+    #DISPLAY是由ssh提供的系统变量，值"none:0"表示不要访问X11
+    setsid env SSH_ASKPASS="$PASSWORD_FILE" DISPLAY='none:0' \
+        ssh -p $PORT $SSH_ARGS $host "$CMD"
+}
+
+
+#解析命令行选项
+cmdline_parse() {
+    while getopts :h:u:p:k:K:s:f:o:t: option; do
+        case "$option" in
+        h)
+            HOST="$OPTARG"
+            ;;
+        u)
+            USER="$OPTARG"
+            ;;
+        p)
+            PORT="$OPTARG"
+            ;;
+        k)
+            create_password_file "$OPTARG"
+            ;;
+        K)
+            PASSWORD_FILE="$OPTARG"
+            ;;
+        s)
+            REMOTE_SHELL="$OPTARG"
+            ;;
+        f)
+            FORKS="$OPTARG"
+            ;;
+        o)
+            SSH_ARGS="$SSH_ARGS -o $OPTARG"
+            ;;
+        t)
+            SSH_TIMEOUT="$OPTARG"
+            ;;
+        \?)
+            error "Invalid option: -${OPTARG}"
+            ;;
+        \:)
+            error "Must provide a value for -${OPTARG} option"
+            ;;
+        esac
+    done
+
+    #处理完选项，$1变为非选项参数
+    shift $(($OPTIND - 1))
+    unset OPTIND
+
+    #命令
+    CMD="$1"
+
+    #完整的ssh连接选项
+    SSH_ARGS="$SSH_ARGS -o ConnectTimeout=${SSH_TIMEOUT}"
+}
+
+
+main() {
+    if [[ "$#" -lt 5 ]]; then
+        usage
+    fi
+
+    #命令行选项处理
+    cmdline_parse "$@"
+
+    #在远程主机上执行命令
+    remote_cmd $HOST
+}
+
+main "$@"
