@@ -91,12 +91,19 @@ EOF
 
 #ssh到远程主机并执行命令
 exec_cmd() {
+    local alloc_tty=
+
+    #远程执行sudo命令需要分配一个伪终端，不然报错
+    if echo "$MODULE_ARGS" | grep 'sudo' >/dev/null 2>&1; then
+        alloc_tty="-t"
+    fi
+
     #setsid在新session中运行进程，让进程脱离终端
     #env让ssh运行在设置好的环境中
     #SSH_ASKPASS是由ssh提供的系统变量，值为保存ssh连接密码的可执行文件
     #DISPLAY是由ssh提供的系统变量，值"none:0"表示不要访问X11
     setsid env SSH_ASKPASS="$PASSWORD_FILE" DISPLAY='none:0' \
-        ssh -l $SSH_USER -p $SSH_PORT $SSH_ARGS $HOST "$MODULE_ARGS"
+        ssh $alloc_tty -l $SSH_USER -p $SSH_PORT $SSH_ARGS $HOST "$MODULE_ARGS"
 }
 
 
@@ -195,7 +202,7 @@ main() {
 
     #必须指定一个远程主机
     [[ -z "$HOST" ]] && error "Must provide a remote host!"
-    #密码文件存在
+    #密码文件必须存在
     [[ -z "$PASSWORD_FILE" ]] && error "The value of the variable \$PASSWORD_FILE empty!"
     [[ -f "$PASSWORD_FILE" ]] || error "Password file $PASSWORD_FILE does not exist!"
 
