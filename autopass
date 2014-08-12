@@ -2,38 +2,64 @@
 #
 #ssh到远程主机执行命令，并自动填密码
 
-#远程主机
+#引用未定义的变量时报错并退出脚本
+set -o nounset
+
+#主机
 HOST=""
 
-#ssh连接用户，这是ssh提供的系统变量
-USER=""
+#ssh连接用户，默认为当前用户
+SSH_USER="$(whoami)"
 
 #ssh连接端口
-PORT=22
-
-#密码文件，必须有可执行权限
-PASSWORD_FILE=""
-
-#执行远程主机执行命令的shell
-REMOTE_SHELL="/bin/sh"
+SSH_PORT=22
 
 #ssh连接选项
-#StrictHostKeyChecking=no不会检查~/.ssh/known_hosts文件
-#UserKnownHostsFile=/dev/null不记录信息到~/.ssh/known_hosts文件
-#SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+#StrictHostKeyChecking=no表示不会检查~/.ssh/known_hosts文件
 SSH_ARGS="-o StrictHostKeyChecking=no"
 
 #ssh连接超时时间
 SSH_TIMEOUT=30
 
-#并发数量
-FORKS=5
+#密码文件，必须有可执行权限
+PASSWORD_FILE="/tmp/.autopass_file.sh"
 
-#要执行的命令
-CMD=""
+#执行的动作，ssh表示远程执行命令，scp表示传输文件到远程主机
+MODULE="ssh"
 
-#引用未定义的变量时报错并退出脚本
-set -o nounset
+#模块参数
+MODULE_ARGS=""
+
+
+usage() {
+    cat <<EOF
+Usage: 
+  $(basename $0) -h host [-u user] [-p port] [-k password | -K password_file]
+        [-o ssh_args] [-t ssh_timeout] [-m module] -a "module_args"
+
+Options:
+  -m <module>             要执行的模块，值为ssh表示执行命令，scp表示传输文件，默认为ssh
+  -a <module_args>        模块参数，对ssh来说就是要执行的命令，对scp来说就是路径
+  -h <host>               远程主机
+  -u <user>               ssh用户，默认为当前用户
+  -p <port>               ssh端口，默认22端口
+  -k <password>           ssh密码
+  -K <password_file>      ssh密码文件路径，密码文件必须有可执行权限
+  -o <ssh_args>           ssh连接选项
+  -t <ssh_timeout>        ssh连接超时时间，默认30s
+EOF
+    exit
+}
+
+
+success() {
+    echo -e "\033[32m$@\033[0m"
+}
+
+
+failed() {
+    echo -e "\033[31m$@\033[0m" >&2
+}
 
 
 error() {
@@ -42,90 +68,95 @@ error() {
 }
 
 
-#检查命令返回值，判断命令是否成功执行
-return_code_check() {
-    if [[ "$?" -eq 0 ]]; then
-        echo "$@ success!"
-    else
-        error "$@ failed!"
-    fi
-}
-
-
-usage() {
-    cat <<EOF
-Usage: $(basename $0) <-h host> <-k password | -K password_file> [option]... "cmd cmd_args"
-
-Options:
-  -h <host>               远程主机
-  -u <user>               ssh用户，默认为当前用户
-  -p <port>               ssh端口，默认22端口
-  -k <password>           ssh密码
-  -K <password_file>      ssh密码脚本，密码脚本必须有可执行权限
-  -s <shell>              远程主机shell，默认为/bin/sh
-  -f <forks>              并发数，默认为5
-  -o <ssh_args>           ssh连接选项
-  -t <ssh_timeout>        ssh连接超时时间，默认30s
-EOF
-    exit
-}
-
-
 #如果通过-k选项提供密码，则自动创建密码脚本
 create_password_file() {
     local password="$1"
-    local pass_file="${HOME}/.autopass_file.sh"
+    local password_file="${HOME}/.autopass_file.sh"
 
-    cat <<EOF >"$pass_file"
+    cat <<EOF >"$password_file"
 #!/bin/sh
 echo "$password"
 EOF
 
     if [[ "$?" == 0 ]]; then
         #密码文件必须有可执行权限
-        chmod +x "$pass_file"
+        chmod +x "$password_file"
 
-        PASSWORD_FILE="$pass_file"
+        PASSWORD_FILE="$password_file"
     else
-        error "Create password file $pass_file failed!"
+        error "Create password file $password_file failed!"
     fi
 }
 
 
 #ssh到远程主机并执行命令
-remote_cmd() {
-    local host="$1"
-
+exec_cmd() {
     #setsid在新session中运行进程，让进程脱离终端
     #env让ssh运行在设置好的环境中
     #SSH_ASKPASS是由ssh提供的系统变量，值为保存ssh连接密码的可执行文件
     #DISPLAY是由ssh提供的系统变量，值"none:0"表示不要访问X11
     setsid env SSH_ASKPASS="$PASSWORD_FILE" DISPLAY='none:0' \
-        ssh -p $PORT $SSH_ARGS $host "$CMD"
+        ssh -l $SSH_USER -p $SSH_PORT $SSH_ARGS $HOST "$MODULE_ARGS"
+}
+
+
+#传输本地文件/目录到远程主机
+#Usage: transfer_file -s src_path -d dest_path
+#Arguments:
+# -s <src_path>：源路径
+# -d <dest_path>：目的路径
+transfer_file() {
+    local src= dest= dir_opt=
+
+    while getopts :s:d: option; do
+        case "$option" in
+            s) src="$OPTARG";;
+            d) dest="$OPTARG";;
+            \?) error "SCP_MODULE: invalid option -${OPTARG}";;
+            \:) error "SCP_MODULE: must provide a value for -${OPTARG} option";;
+        esac
+    done
+    unset OPTIND
+
+    #源路径必须存在
+    [[ -z "$src" ]] && error "Must provide source path.(-m scp -a \"-s src -d dest\")"
+    [[ -e "$src" ]] || error "$src: No such file or directory"
+    #必须指定目的路径
+    [[ -z "$dest" ]] && error "Must provide destination path.(-m scp -a \"-s src -d dest\")"
+    #原路径是目录
+    [[ -d "$src" ]] && dir_opt="-r"
+
+    setsid env SSH_ASKPASS="$PASSWORD_FILE" DISPLAY='none:0' \
+        scp $dir_opt -p -P $SSH_PORT $SSH_ARGS "$src" "$SSH_USER"@"$HOST":"$dest"
+
+    [[ $? -eq 0 ]] && success "File transfer success"
 }
 
 
 #解析命令行选项
 cmdline_parse() {
-    while getopts :h:u:p:k:K:s:f:o:t: option; do
+    while getopts :m:a:h:u:p:k:K:f:o:t: option; do
         case "$option" in
+        m)
+            MODULE="$OPTARG"
+            ;;
+        a)
+            MODULE_ARGS="$OPTARG"
+            ;;
         h)
             HOST="$OPTARG"
             ;;
         u)
-            USER="$OPTARG"
+            SSH_USER="$OPTARG"
             ;;
         p)
-            PORT="$OPTARG"
+            SSH_PORT="$OPTARG"
             ;;
         k)
             create_password_file "$OPTARG"
             ;;
         K)
             PASSWORD_FILE="$OPTARG"
-            ;;
-        s)
-            REMOTE_SHELL="$OPTARG"
             ;;
         f)
             FORKS="$OPTARG"
@@ -145,28 +176,41 @@ cmdline_parse() {
         esac
     done
 
-    #处理完选项，$1变为非选项参数
-    shift $(($OPTIND - 1))
+    #OPTIND是全局变量，会影响到其他模块的getopts
+    #每次通过getopts处理完选项后都要unset掉
     unset OPTIND
-
-    #命令
-    CMD="$1"
-
+    
     #完整的ssh连接选项
     SSH_ARGS="$SSH_ARGS -o ConnectTimeout=${SSH_TIMEOUT}"
 }
 
 
 main() {
-    if [[ "$#" -lt 5 ]]; then
+    if [[ "$#" -lt 1 ]]; then
         usage
     fi
 
     #命令行选项处理
     cmdline_parse "$@"
 
-    #在远程主机上执行命令
-    remote_cmd $HOST
+    #必须指定一个远程主机
+    [[ -z "$HOST" ]] && error "Must provide a remote host!"
+    #密码文件存在
+    [[ -z "$PASSWORD_FILE" ]] && error "The value of the variable \$PASSWORD_FILE empty!"
+    [[ -f "$PASSWORD_FILE" ]] || error "Password file $PASSWORD_FILE does not exist!"
+
+    case "$MODULE" in
+    ssh)
+        exec_cmd
+        ;;
+    scp)
+        transfer_file $MODULE_ARGS
+        ;;
+    *)
+        failed "Unknown module: $MODULE"
+        usage
+        ;;
+    esac
 }
 
 main "$@"
