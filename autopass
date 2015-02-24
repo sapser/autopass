@@ -103,7 +103,7 @@ exec_cmd() {
     #SSH_ASKPASS是由ssh提供的系统变量，值为保存ssh连接密码的可执行文件
     #DISPLAY是由ssh提供的系统变量，值"none:0"表示不要访问X11
     setsid env SSH_ASKPASS="$PASSWORD_FILE" DISPLAY='none:0' \
-        ssh $alloc_tty -l $SSH_USER -p $SSH_PORT $SSH_ARGS $HOST "$MODULE_ARGS"
+        ssh -n $alloc_tty -l $SSH_USER -p $SSH_PORT $SSH_ARGS $HOST "$MODULE_ARGS"
 }
 
 
